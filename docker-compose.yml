@@ -1,0 +1,123 @@
+services:
+  postgresql:
+    image: postgres:15-alpine
+    container_name: liferay_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lportal}
+      POSTGRES_USER: ${POSTGRES_USER:-liferay}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-liferay} -d ${POSTGRES_DB:-lportal}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - liferay_net
+
+  elasticsearch:
+    image: elasticsearch:7.17.18
+    container_name: liferay_search
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms${ELASTICSEARCH_HEAP:-512m} -Xmx${ELASTICSEARCH_HEAP:-512m}"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    networks:
+      - liferay_net
+
+  liferay:
+    image: liferay/portal:7.4.3.120-ga120
+    container_name: liferay_portal
+    restart: unless-stopped
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      LIFERAY_JDBC_PERIOD_DEFAULT_PERIOD_DRIVER_UPPERCASEC_LASS_UPPERCASEN_AME: org.postgresql.Driver
+      LIFERAY_JDBC_PERIOD_DEFAULT_PERIOD_URL: jdbc:postgresql://postgresql:5432/${POSTGRES_DB:-lportal}
+      LIFERAY_JDBC_PERIOD_DEFAULT_PERIOD_USERNAME: ${POSTGRES_USER:-liferay}
+      LIFERAY_JDBC_PERIOD_DEFAULT_PERIOD_PASSWORD: ${POSTGRES_PASSWORD}
+      LIFERAY_JVM_OPTS: "-Xms${LIFERAY_JVM_XMS:-1g} -Xmx${LIFERAY_JVM_XMX:-2g}"
+    volumes:
+      - liferay_data:/opt/liferay/data
+      - liferay_deploy:/opt/liferay/deploy
+      - liferay_osgi:/opt/liferay/osgi
+      - ./runtime/portal-ext.properties:/opt/liferay/portal-ext.properties:ro
+    ports:
+      - "8080:8080"
+    networks:
+      - liferay_net
+
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: liferay_nginx
+    restart: unless-stopped
+    depends_on:
+      - liferay
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./runtime/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./runtime/certs:/etc/nginx/certs:ro
+      - certbot_data:/var/www/certbot:ro
+    networks:
+      - liferay_net
+
+  # ── One-time setup: builds theme, creates pages, applies config ─────
+  setup:
+    image: eclipse-temurin:8-jdk
+    container_name: liferay_setup
+    depends_on:
+      - liferay
+      - postgresql
+    volumes:
+      - ./:/workspace:ro
+      - liferay_deploy:/opt/liferay/deploy
+      - ./scripts:/scripts:ro
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-lportal}
+      - POSTGRES_USER=${POSTGRES_USER:-liferay}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - PORTAL_DOMAIN=${PORTAL_DOMAIN:-localhost}
+      - BRAND_NAME=${BRAND_NAME:-Acme Corp}
+      - THEME_ID=${THEME_ID:-acmetheme}
+      - THEME_DISPLAY_NAME=${THEME_DISPLAY_NAME:-Acme Theme}
+      - COLOR_PRIMARY=${COLOR_PRIMARY:-#00395E}
+      - COLOR_PRIMARY_LIGHT=${COLOR_PRIMARY_LIGHT:-#0072CE}
+      - COLOR_PRIMARY_LIGHTER=${COLOR_PRIMARY_LIGHTER:-#4DA3E5}
+      - COLOR_PRIMARY_LIGHTEST=${COLOR_PRIMARY_LIGHTEST:-#E8F4FD}
+      - COLOR_SECONDARY=${COLOR_SECONDARY:-#1A1A2E}
+      - COLOR_ACCENT=${COLOR_ACCENT:-#0072CE}
+      - FONT_IMPORT_URL=${FONT_IMPORT_URL:-}
+      - FONT_FAMILY=${FONT_FAMILY:-IBM Plex Sans}
+      - FONT_SIZE_BASE=${FONT_SIZE_BASE:-0.875rem}
+      - LAYOUT_STYLE=${LAYOUT_STYLE:-sharp}
+      - CONTENT_MAX_WIDTH=${CONTENT_MAX_WIDTH:-1584px}
+      - SITE_PAGES=${SITE_PAGES:-}
+      - FOOTER_COL_1=${FOOTER_COL_1:-}
+      - FOOTER_COL_2=${FOOTER_COL_2:-}
+      - FOOTER_COL_3=${FOOTER_COL_3:-}
+      - FOOTER_COL_4=${FOOTER_COL_4:-}
+      - FOOTER_COL_5=${FOOTER_COL_5:-}
+      - FOOTER_COL_6=${FOOTER_COL_6:-}
+    entrypoint: ["/scripts/entrypoint-setup.sh"]
+    networks:
+      - liferay_net
+
+volumes:
+  pg_data:
+  es_data:
+  liferay_data:
+  liferay_deploy:
+  liferay_osgi:
+  certbot_data:
+
+networks:
+  liferay_net:
+    driver: bridge
